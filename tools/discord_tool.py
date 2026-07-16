@@ -578,6 +578,59 @@ def _unpin_message(token: str, channel_id: str, message_id: str, **_kwargs: Any)
     return json.dumps({"success": True, "message": f"Message {message_id} unpinned."})
 
 
+def _upsert_pinned_status(
+    token: str,
+    channel_id: str,
+    content: str,
+    marker: str = "AI-DLC Ledger Status",
+    **_kwargs: Any,
+) -> str:
+    """Create or update one pinned status message in a channel/thread."""
+    marker = str(marker or "AI-DLC Ledger Status").strip() or "AI-DLC Ledger Status"
+    content = str(content or "").strip()
+    if not content:
+        raise DiscordAPIError(400, "content is required")
+    if marker not in content:
+        content = f"**{marker}**\n{content}"
+
+    pins = _discord_request("GET", f"/channels/{channel_id}/pins", token)
+    target = None
+    for msg in pins:
+        if marker in str(msg.get("content") or ""):
+            target = msg
+            break
+
+    if target:
+        message_id = str(target["id"])
+        updated = _discord_request(
+            "PATCH",
+            f"/channels/{channel_id}/messages/{message_id}",
+            token,
+            body={"content": content},
+        )
+        return json.dumps({
+            "success": True,
+            "action": "updated",
+            "message_id": updated.get("id", message_id) if isinstance(updated, dict) else message_id,
+            "pinned": True,
+        })
+
+    created = _discord_request(
+        "POST",
+        f"/channels/{channel_id}/messages",
+        token,
+        body={"content": content},
+    )
+    message_id = str(created["id"])
+    _discord_request("PUT", f"/channels/{channel_id}/pins/{message_id}", token)
+    return json.dumps({
+        "success": True,
+        "action": "created",
+        "message_id": message_id,
+        "pinned": True,
+    })
+
+
 def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any) -> str:
     """Delete a message from a channel or thread."""
     _discord_request("DELETE", f"/channels/{channel_id}/messages/{message_id}", token)
@@ -642,6 +695,7 @@ _ACTIONS = {
     "list_pins": _list_pins,
     "pin_message": _pin_message,
     "unpin_message": _unpin_message,
+    "upsert_pinned_status": _upsert_pinned_status,
     "delete_message": _delete_message,
     "create_thread": _create_thread,
     "add_role": _add_role,
@@ -669,6 +723,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("list_pins", "(channel_id)", "pinned messages in a channel"),
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
+    ("upsert_pinned_status", "(channel_id, content)", "create/update one pinned status message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
@@ -690,6 +745,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "list_pins": ["channel_id"],
     "pin_message": ["channel_id", "message_id"],
     "unpin_message": ["channel_id", "message_id"],
+    "upsert_pinned_status": ["channel_id", "content"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
@@ -845,6 +901,14 @@ def _build_schema(
             "type": "string",
             "description": "Discord message ID.",
         },
+        "content": {
+            "type": "string",
+            "description": "Message body for upsert_pinned_status.",
+        },
+        "marker": {
+            "type": "string",
+            "description": "Stable marker used to find the existing pinned status message (default: AI-DLC Ledger Status).",
+        },
         "query": {
             "type": "string",
             "description": "Member name prefix to search for (search_members).",
@@ -927,6 +991,10 @@ _ACTION_403_HINT = {
     "unpin_message": (
         "Bot lacks MANAGE_MESSAGES permission in this channel."
     ),
+    "upsert_pinned_status": (
+        "Bot needs SEND_MESSAGES plus MANAGE_MESSAGES to create and pin the status, "
+        "and READ_MESSAGE_HISTORY to find the existing pinned status."
+    ),
     "delete_message": (
         "Bot lacks MANAGE_MESSAGES permission in this channel, or cannot view the channel/message."
     ),
@@ -995,6 +1063,8 @@ def _run_discord_action(
     message_id: str = "",
     query: str = "",
     name: str = "",
+    content: str = "",
+    marker: str = "",
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -1032,6 +1102,8 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "content": content,
+        "marker": marker,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -1050,6 +1122,8 @@ def _run_discord_action(
             message_id=message_id,
             query=query,
             name=name,
+            content=content,
+            marker=marker,
             limit=limit,
             before=before,
             after=after,
@@ -1082,6 +1156,7 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
+    "content": "", "marker": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
 }
 
