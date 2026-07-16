@@ -22,9 +22,98 @@ from tests.e2e.conftest import (
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_discord_env(monkeypatch):
+    """Keep live profile channel policy from contaminating adapter unit tests."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "*")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "*")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL_LIMIT", "0")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+
 async def dispatch(adapter, msg):
     await adapter._handle_message(msg)
     await asyncio.sleep(E2E_MESSAGE_SETTLE_DELAY)
+
+
+class TestPlatformVerificationContext:
+    async def test_guild_message_attaches_verified_role_metadata(
+        self, discord_adapter, bot_user, monkeypatch
+    ):
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "*")
+        monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "*")
+        monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+        discord_adapter.handle_message = AsyncMock()
+        discord_adapter._allowed_user_ids = {"11111"}
+        discord_adapter._text_batch_delay_seconds = 0
+        author = SimpleNamespace(
+            id=11111,
+            name="testuser",
+            display_name="Display Name",
+            bot=False,
+            roles=[
+                SimpleNamespace(id=700, name="Developer"),
+                SimpleNamespace(id=701, name="QA"),
+            ],
+        )
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> approve the Planned transition for IOIA-5000",
+            author=author,
+            mentions=[bot_user],
+            message_id=88001,
+        )
+
+        await discord_adapter._handle_message(msg)
+
+        discord_adapter.handle_message.assert_awaited_once()
+        event = discord_adapter.handle_message.await_args.args[0]
+        assert event.metadata["platform_verification_context"] == {
+            "schema_version": 1,
+            "platform": "discord",
+            "verification_source": "platform_adapter",
+            "scope_id": str(msg.guild.id),
+            "channel_id": str(msg.channel.id),
+            "thread_id": None,
+            "message_id": "88001",
+            "user_id": "11111",
+            "user_name": "Display Name",
+            "roles": [
+                {"id": "700", "name": "Developer"},
+                {"id": "701", "name": "QA"},
+            ],
+            "message_text": "approve the Planned transition for IOIA-5000",
+        }
+
+    async def test_dm_message_has_no_scope_or_roles(self, discord_adapter):
+        discord_adapter.handle_message = AsyncMock()
+        discord_adapter._allowed_user_ids = {"11111"}
+        discord_adapter._text_batch_delay_seconds = 0
+        dm = make_fake_dm_channel()
+        author = SimpleNamespace(
+            id=11111,
+            name="testuser",
+            display_name="DM User",
+            bot=False,
+            roles=[SimpleNamespace(id=700, name="Developer")],
+        )
+        msg = make_discord_message(
+            content="approve the draft creation",
+            author=author,
+            channel=dm,
+            mentions=[],
+            message_id=88002,
+        )
+
+        await discord_adapter._handle_message(msg)
+
+        event = discord_adapter.handle_message.await_args.args[0]
+        context = event.metadata["platform_verification_context"]
+        assert context["scope_id"] is None
+        assert context["roles"] == []
+        assert context["message_text"] == "approve the draft creation"
 
 
 class TestMentionStrippedCommandDispatch:

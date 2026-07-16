@@ -44,7 +44,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Callable, Dict, Optional, Any, List, Union
+from typing import Callable, Dict, Optional, Any, List, Mapping, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -1864,6 +1864,19 @@ from gateway.whatsapp_identity import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _platform_verification_context_for_event(
+    event: Any,
+) -> Mapping[str, Any] | None:
+    """Extract trusted turn facts only from external events with valid metadata."""
+    if bool(getattr(event, "internal", False)):
+        return None
+    metadata = getattr(event, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    context = metadata.get("platform_verification_context")
+    return context if isinstance(context, Mapping) else None
 
 
 _OWN_POLICY_OPEN_ENV = {
@@ -11293,8 +11306,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
-        # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        # Set session context variables for tools (task-local, concurrency-safe).
+        # Internal/synthetic events deliberately receive no user verification
+        # record, even if they inherited or were constructed with metadata.
+        _session_env_tokens = self._set_session_env(
+            context,
+            platform_verification_context=_platform_verification_context_for_event(event),
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -15439,7 +15457,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return delivered
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(
+        self,
+        context: SessionContext,
+        *,
+        platform_verification_context: Mapping[str, Any] | None = None,
+    ) -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -15468,6 +15491,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            platform_verification_context=platform_verification_context,
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
         )

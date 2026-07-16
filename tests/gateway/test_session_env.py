@@ -1,18 +1,22 @@
 import asyncio
 import os
 
+from types import SimpleNamespace
+
 import pytest
 
 from gateway.config import Platform
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _platform_verification_context_for_event
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
+    get_platform_verification_context,
     get_session_env,
+    reset_session_vars,
     set_session_vars,
     clear_session_vars,
     _VAR_MAP,
-    _UNSET,
 )
+from tools.environments.local import _inject_session_context_env
 
 
 @pytest.fixture(autouse=True)
@@ -25,9 +29,128 @@ def _reset_contextvars():
     would leak into test B.  This fixture ensures each test starts clean.
     """
     yield
-    for var in _VAR_MAP.values():
-        # Can't use var.reset() without a token; just set back to sentinel.
-        var.set(_UNSET)
+    reset_session_vars()
+
+
+def _verification_context(user_id: str = "user-1", role: str = "Developer") -> dict:
+    return {
+        "schema_version": 1,
+        "platform": "discord",
+        "verification_source": "platform_adapter",
+        "scope_id": "guild-1",
+        "channel_id": "channel-1",
+        "thread_id": "thread-1",
+        "message_id": f"message-{user_id}",
+        "user_id": user_id,
+        "user_name": user_id,
+        "roles": [{"id": f"role-{role}", "name": role}],
+        "message_text": "approve the Planned transition for IOIA-5000",
+    }
+
+
+def test_platform_verification_context_is_task_local_copy():
+    context = _verification_context()
+
+    tokens = set_session_vars(platform_verification_context=context)
+    context["user_id"] = "mutated-caller"
+    first = get_platform_verification_context()
+    first["user_id"] = "mutated-reader"
+
+    assert get_platform_verification_context()["user_id"] == "user-1"
+    clear_session_vars(tokens)
+    assert get_platform_verification_context() == {}
+
+
+def test_platform_verification_context_fails_closed_and_resets_inherited_value():
+    assert get_platform_verification_context() == {}
+    set_session_vars(platform_verification_context="not-a-mapping")
+    assert get_platform_verification_context() == {}
+
+    set_session_vars(platform_verification_context=_verification_context())
+    reset_session_vars()
+    assert get_platform_verification_context() == {}
+
+
+def test_platform_verification_context_is_not_exported_to_subprocess_env():
+    set_session_vars(platform_verification_context=_verification_context())
+    env = {}
+
+    _inject_session_context_env(env)
+
+    assert "HERMES_PLATFORM_VERIFICATION_CONTEXT" not in _VAR_MAP
+    assert "HERMES_PLATFORM_VERIFICATION_CONTEXT" not in env
+
+
+def test_platform_verification_context_isolated_between_concurrent_tasks():
+    async def read_context(user_id: str, delay: float) -> str:
+        tokens = set_session_vars(
+            platform_verification_context=_verification_context(user_id)
+        )
+        try:
+            await asyncio.sleep(delay)
+            return get_platform_verification_context()["user_id"]
+        finally:
+            clear_session_vars(tokens)
+
+    async def run() -> list[str]:
+        return await asyncio.gather(
+            read_context("user-a", 0.05),
+            read_context("user-b", 0.01),
+        )
+
+    assert asyncio.run(run()) == ["user-a", "user-b"]
+
+
+def test_internal_or_missing_metadata_never_binds_verification_context():
+    external = SimpleNamespace(
+        internal=False,
+        metadata={"platform_verification_context": _verification_context()},
+    )
+    internal = SimpleNamespace(
+        internal=True,
+        metadata={"platform_verification_context": _verification_context()},
+    )
+    malformed = SimpleNamespace(internal=False, metadata=None)
+
+    assert _platform_verification_context_for_event(external)["user_id"] == "user-1"
+    assert _platform_verification_context_for_event(internal) is None
+    assert _platform_verification_context_for_event(malformed) is None
+
+
+def test_set_session_env_binds_optional_platform_verification_context():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="channel-1",
+        chat_type="group",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(
+        context,
+        platform_verification_context=_verification_context(),
+    )
+    try:
+        assert get_platform_verification_context()["user_id"] == "user-1"
+    finally:
+        runner._clear_session_env(tokens)
+
+
+def test_set_session_env_without_verification_context_does_not_reuse_prior_turn():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="channel-2",
+        chat_type="group",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    set_session_vars(platform_verification_context=_verification_context())
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_platform_verification_context() == {}
+    finally:
+        runner._clear_session_env(tokens)
 
 
 def test_set_session_env_sets_contextvars(monkeypatch):
