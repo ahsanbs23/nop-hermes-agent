@@ -475,6 +475,48 @@ class TestPinUnpinDelete:
         assert "deleted" in result["message"]
         mock_req.assert_called_once_with("DELETE", "/channels/11/messages/500", "test-token")
 
+    @patch("tools.discord_tool._discord_request")
+    def test_upsert_pinned_status_updates_existing_pin(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            [{"id": "500", "content": "**AI-DLC Ledger Status**\nold"}],
+            {"id": "500"},
+        ]
+
+        result = json.loads(discord_admin_handler(
+            action="upsert_pinned_status",
+            channel_id="11",
+            content="Lifecycle: Planned",
+        ))
+
+        assert result["success"] is True
+        assert result["action"] == "updated"
+        assert result["message_id"] == "500"
+        assert mock_req.call_args_list[0].args == ("GET", "/channels/11/pins", "test-token")
+        assert mock_req.call_args_list[1].args == (
+            "PATCH", "/channels/11/messages/500", "test-token",
+        )
+        assert mock_req.call_args_list[1].kwargs["body"]["content"].startswith("**AI-DLC Ledger Status**")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_upsert_pinned_status_creates_and_pins_when_missing(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [[], {"id": "501"}, None]
+
+        result = json.loads(discord_admin_handler(
+            action="upsert_pinned_status",
+            channel_id="11",
+            content="Lifecycle: AwaitingPlan",
+        ))
+
+        assert result["success"] is True
+        assert result["action"] == "created"
+        assert result["message_id"] == "501"
+        assert mock_req.call_args_list[1].args == (
+            "POST", "/channels/11/messages", "test-token",
+        )
+        assert mock_req.call_args_list[2].args == ("PUT", "/channels/11/pins/501", "test-token")
+
 
 # ---------------------------------------------------------------------------
 # Action: create_thread

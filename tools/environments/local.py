@@ -278,6 +278,11 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_HOME_ADDRESS_NAME",
         "HERMES_DASHBOARD_SESSION_TOKEN",
         "GATEWAY_ALLOWED_USERS",
+        # Atlassian/Jira API tokens are user/tool credentials; ACLI should use
+        # its own authenticated config rather than inheriting the gateway's
+        # token-bearing process env. Keep them out of terminal subprocesses so
+        # sandbox guardrails evaluate the real secret-free child environment.
+        "ATLASSIAN_API_TOKEN",
         "GH_TOKEN",
         "GITHUB_APP_ID",
         "GITHUB_APP_PRIVATE_KEY_PATH",
