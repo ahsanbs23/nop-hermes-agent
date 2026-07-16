@@ -36,7 +36,9 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
+from collections.abc import Mapping
 from contextvars import ContextVar
+from copy import deepcopy
 from typing import Any
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
@@ -90,6 +92,12 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+# Trusted platform facts for the active turn. This private ContextVar is
+# intentionally outside ``_VAR_MAP``: it is task-local only and must never be
+# exported to subprocess environments or read through the legacy env API.
+_PLATFORM_VERIFICATION_CONTEXT: ContextVar = ContextVar(
+    "platform_verification_context", default=_UNSET
+)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
@@ -165,6 +173,7 @@ def set_session_vars(
     session_key: str = "",
     session_id: str = "",
     message_id: str = "",
+    platform_verification_context: Mapping[str, Any] | None = None,
     profile: str = "",
     cwd: str = "",
     async_delivery: bool = True,
@@ -202,6 +211,11 @@ def set_session_vars(
         _SESSION_ID.set(session_id),
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
+        _PLATFORM_VERIFICATION_CONTEXT.set(
+            deepcopy(dict(platform_verification_context))
+            if isinstance(platform_verification_context, Mapping)
+            else {}
+        ),
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
@@ -240,6 +254,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_PROFILE,
     ):
         var.set("")
+    _PLATFORM_VERIFICATION_CONTEXT.set({})
     # Reset async-delivery capability to the "never set" sentinel rather than a
     # falsy value: a cleared context should fall back to the default-supported
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
@@ -289,6 +304,7 @@ def reset_session_vars() -> None:
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
+    _PLATFORM_VERIFICATION_CONTEXT.set(_UNSET)
     # Reset the async-delivery capability to "never bound here" (_UNSET) for the
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
@@ -325,6 +341,23 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_platform_verification_context() -> dict[str, Any]:
+    """Return an isolated copy of trusted platform facts for this turn.
+
+    This accessor is task-local, non-persistent, and intentionally separate
+    from the legacy session environment bridge. The surrounding helpers are
+    not nestable: bind once per turn and clear in the existing ``finally`` path.
+    Missing or malformed values fail closed.
+    """
+    value = _PLATFORM_VERIFICATION_CONTEXT.get()
+    if value is _UNSET or not isinstance(value, Mapping):
+        return {}
+    try:
+        return deepcopy(dict(value))
+    except Exception:
+        return {}
 
 
 def async_delivery_supported() -> bool:

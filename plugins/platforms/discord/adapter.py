@@ -6393,8 +6393,34 @@ class DiscordAdapter(BasePlatformAdapter):
         # so forum descriptions (e.g. project instructions) appear in the session context.
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
-        # Build source
+        # Build platform-neutral verification facts at the trusted adapter
+        # boundary. Policy consumers decide whether these facts authorize any
+        # action; Hermes core only transports the per-turn record.
         guild = getattr(message, "guild", None)
+        author_roles = list(getattr(message.author, "roles", None) or []) if guild else []
+        platform_verification_context = {
+            "schema_version": 1,
+            "platform": "discord",
+            "verification_source": "platform_adapter",
+            "scope_id": str(guild.id) if guild else None,
+            "channel_id": str(getattr(effective_channel, "id", "")) or None,
+            "thread_id": thread_id,
+            "message_id": str(message.id),
+            "user_id": str(message.author.id),
+            "user_name": (
+                getattr(message.author, "display_name", None)
+                or getattr(message.author, "name", None)
+            ),
+            "roles": [
+                {
+                    "id": str(getattr(role, "id")),
+                    "name": str(getattr(role, "name", "")),
+                }
+                for role in author_roles
+                if getattr(role, "id", None) is not None
+            ],
+            "message_text": normalized_content,
+        }
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
@@ -6660,6 +6686,9 @@ class DiscordAdapter(BasePlatformAdapter):
             auto_skill=_skills,
             channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            metadata={
+                "platform_verification_context": platform_verification_context
+            },
         )
 
         # Track thread participation so the bot won't require @mention for
