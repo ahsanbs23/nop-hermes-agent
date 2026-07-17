@@ -519,6 +519,53 @@ class TestPinUnpinDelete:
 
 
 # ---------------------------------------------------------------------------
+# Action: rename_thread
+# ---------------------------------------------------------------------------
+
+class TestRenameThread:
+    @patch("tools.discord_tool._discord_request")
+    def test_rename_thread(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "800", "name": "IOIA-1234 - Short Title"}
+
+        result = json.loads(discord_admin_handler(
+            action="rename_thread",
+            channel_id="800",
+            name="IOIA-1234 - Short Title",
+        ))
+
+        assert result["success"] is True
+        assert result["thread_id"] == "800"
+        assert result["name"] == "IOIA-1234 - Short Title"
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/800", "test-token",
+            body={"name": "IOIA-1234 - Short Title"},
+        )
+
+    def test_rename_thread_requires_channel_id(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_admin_handler(
+            action="rename_thread",
+            name="IOIA-1234 - Short Title",
+        ))
+
+        assert "error" in result
+        assert "channel_id" in result["error"]
+
+    def test_rename_thread_requires_name(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_admin_handler(
+            action="rename_thread",
+            channel_id="800",
+        ))
+
+        assert "error" in result
+        assert "name" in result["error"]
+
+
+# ---------------------------------------------------------------------------
 # Action: create_thread
 # ---------------------------------------------------------------------------
 
@@ -644,6 +691,8 @@ class TestRegistration:
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
         expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
         assert actions == expected_admin
+        assert "rename_thread" in actions
+        assert "rename_thread" not in {"fetch_messages", "search_members", "create_thread"}
 
     def test_all_actions_covered(self):
         """Core + admin actions should cover all known actions."""
@@ -669,6 +718,7 @@ class TestRegistration:
         # Admin actions should NOT be in core description
         assert "list_guilds()" not in desc
         assert "add_role(" not in desc
+        assert "rename_thread" not in desc
 
     def test_admin_schema_description(self):
         """Admin schema description should mention admin actions."""
@@ -678,6 +728,7 @@ class TestRegistration:
         assert "list_guilds()" in desc
         assert "add_role(guild_id, user_id, role_id)" in desc
         assert "delete_message(channel_id, message_id)" in desc
+        assert "rename_thread(channel_id, name)" in desc
         # Core actions should NOT be in admin description
         assert "fetch_messages(" not in desc
         assert "create_thread(" not in desc
@@ -1248,6 +1299,11 @@ class Test403Enrichment:
         msg = _enrich_403("some_new_action", '{"message":"weird"}')
         assert "some_new_action" in msg
         assert "weird" in msg
+
+    def test_enrich_rename_thread_mentions_manage_threads(self):
+        msg = _enrich_403("rename_thread", '{"message":"Missing Permissions"}')
+        assert "Manage Threads" in msg
+        assert "Missing Permissions" in msg
 
     @patch("tools.discord_tool._discord_request")
     def test_403_in_runtime_is_enriched(self, mock_req, monkeypatch):
