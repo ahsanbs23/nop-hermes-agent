@@ -170,7 +170,7 @@ This method requires **Public Bot** to be set to **ON** in Step 2. If you set Pu
 You can construct the invite URL directly using this format:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274878286912
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=292058156096
 ```
 
 Replace `YOUR_APP_ID` with the Application ID from Step 1.
@@ -189,13 +189,14 @@ These are the minimum permissions your bot needs:
 
 - **Send Messages in Threads** — respond in thread conversations
 - **Add Reactions** — react to messages for acknowledgment
+- **Manage Threads** — rename or manage existing threads when Discord admin actions are enabled
 
 ### Permission Integers
 
 | Level | Permissions Integer | What's Included |
 |-------|-------------------|-----------------|
 | Minimal | `117760` | View Channels, Send Messages, Read Message History, Attach Files |
-| Recommended | `274878286912` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions |
+| Recommended | `292058156096` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions, Manage Threads |
 
 ## Step 6: Invite to Your Server
 
@@ -733,6 +734,10 @@ Discord forum channels (type 15) don't accept direct messages — every post in 
 - **Detection is three-layered**: the channel directory cache first, a process-local probe cache second, and a live `GET /channels/{id}` probe as a last resort (whose result is then memoized for the life of the process).
 
 Refreshing the directory (`/channels refresh` on platforms that expose it, or a gateway restart) populates the cache with any forum channels created after the bot started.
+
+:::note[Renaming existing threads]
+When the `discord_admin` toolset is enabled, Hermes can rename an existing thread through the Discord REST API. The action uses the thread ID as `channel_id` and patches the thread's `name`. Discord may require the bot to have **Manage Threads**, especially for archived or locked threads.
+:::
 
 ## Troubleshooting
 
