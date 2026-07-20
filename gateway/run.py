@@ -12140,10 +12140,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set session context variables for tools (task-local, concurrency-safe).
         # Internal/synthetic events deliberately receive no user verification
         # record, even if they inherited or were constructed with metadata.
-        _session_env_tokens = self._set_session_env(
-            context,
-            platform_verification_context=_platform_verification_context_for_event(event),
-        )
+        _platform_verification_context = _platform_verification_context_for_event(event)
+        _set_session_env = self._set_session_env
+        try:
+            _set_session_env_params = inspect.signature(_set_session_env).parameters
+            _set_session_env_accepts_verification = (
+                "platform_verification_context" in _set_session_env_params
+                or any(
+                    param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in _set_session_env_params.values()
+                )
+            )
+        except (TypeError, ValueError):
+            _set_session_env_accepts_verification = True
+        if _set_session_env_accepts_verification:
+            _session_env_tokens = _set_session_env(
+                context,
+                platform_verification_context=_platform_verification_context,
+            )
+        else:
+            _session_env_tokens = _set_session_env(context)
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
